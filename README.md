@@ -1,6 +1,6 @@
 # OpenWrt 在线定制编译系统
 
-一个类似 openwrt.ai 的 OpenWrt 固件在线定制编译平台。
+一个 OpenWrt 固件在线定制编译平台。
 
 ## 项目架构
 
