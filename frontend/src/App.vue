@@ -8,6 +8,13 @@ const isBuilding = ref(false)
 const buildResult = ref(null)
 const buildLogs = ref([])
 
+// GitHub 配置
+const githubConfig = ref({
+  token: '',
+  owner: 'BBBIMAX',
+  repo: 'openwrt-builder'
+})
+
 // 表单数据
 const form = ref({
   // 设备
@@ -51,7 +58,7 @@ const form = ref({
   // 高级
   hostname: 'OpenWrt',
   rootSize: '512',
-  imageType: 'efi', // efi, legacy, both
+  imageType: 'efi',
   swapEth0: false,
   makeEml: false
 })
@@ -80,7 +87,7 @@ const packages = {
     { id: 'luci-app-aria2', name: 'Aria2', desc: '下载工具' },
     { id: 'luci-app-qbittorrent', name: 'qBittorrent', desc: 'BT下载' },
     { id: 'luci-app-transmission', name: 'Transmission', desc: 'BT下载' },
-    { id: 'luci-app-thunder', name: 'Thunder', desc: '迅雷下载' }
+    { id: 'luci-app-thunder', name: 'Thunder', desc: '下载' }
   ],
   storage: [
     { id: 'luci-app-samba4', name: 'Samba', desc: '文件共享' },
@@ -139,11 +146,16 @@ function validateForm() {
   return null
 }
 
-// 开始编译
+// 开始编译 - 使用 GitHub Actions
 async function startBuild() {
   const error = validateForm()
   if (error) {
     alert(error)
+    return
+  }
+  
+  if (!githubConfig.value.token) {
+    alert('请先在页面底部配置 GitHub Token')
     return
   }
   
@@ -163,49 +175,50 @@ async function startBuild() {
       form.value.selectedPackages.push(...remove)
     }
     
-    const response = await axios.post('/api/build', form.value)
+    // 调用 GitHub Actions API 触发编译
+    const response = await axios.post(
+      `https://api.github.com/repos/${githubConfig.value.owner}/${githubConfig.value.repo}/actions/workflows/build.yml/dispatch`,
+      {
+        ref: 'master',
+        inputs: {
+          device: form.value.device,
+          device_model: form.value.deviceModel,
+          packages: JSON.stringify(form.value.selectedPackages),
+          theme: form.value.theme,
+          enable_docker: form.value.enableDocker,
+          enable_ipv6: form.value.enableIPv6
+        }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${githubConfig.value.token}`,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        }
+      }
+    )
     
-    if (response.data.success) {
-      buildLogs.value.push('✅ 编译任务已提交，ID: ' + response.data.taskId)
-      buildLogs.value.push('⏳ 预计等待 15-30 分钟...')
-      pollBuildStatus(response.data.taskId)
+    if (response.status === 204) {
+      buildLogs.value.push('✅ 编译任务已提交！')
+      buildLogs.value.push('')
+      buildLogs.value.push('📋 前往 GitHub Actions 查看:')
+      buildLogs.value.push(`   https://github.com/${githubConfig.value.owner}/${githubConfig.value.repo}/actions`)
+      buildLogs.value.push('')
+      buildLogs.value.push('💡 编译完成后(约15-30分钟)可在 Actions 日志中下载固件')
+      isBuilding.value = false
+      buildResult.value = { status: 'submitted' }
     }
   } catch (err) {
-    buildLogs.value.push('❌ 错误: ' + (err.message || '提交失败'))
+    const errMsg = err.response?.data?.message || err.message || '提交失败'
+    buildLogs.value.push('❌ 错误: ' + errMsg)
+    if (err.response?.status === 403) {
+      buildLogs.value.push('💡 请检查 Token 权限，需要 repo 权限')
+    } else if (err.response?.status === 404) {
+      buildLogs.value.push('💡 请检查仓库名称是否正确')
+    }
     isBuilding.value = false
   }
-}
-
-// 轮询编译状态
-async function pollBuildStatus(taskId) {
-  const interval = setInterval(async () => {
-    try {
-      const response = await axios.get(`/api/status/${taskId}`)
-      const status = response.data
-      
-      if (status.logs) {
-        buildLogs.value = status.logs.split('\n').filter(l => l)
-      }
-      
-      if (status.status === 'completed') {
-        clearInterval(interval)
-        isBuilding.value = false
-        buildResult.value = status
-        buildLogs.value.push('✅ 编译完成！')
-      } else if (status.status === 'failed') {
-        clearInterval(interval)
-        isBuilding.value = false
-        buildLogs.value.push('❌ 编译失败')
-      }
-    } catch (err) {
-      console.error(err)
-    }
-  }, 5000)
-}
-
-// 下载固件
-function downloadFirmware(url) {
-  window.open(url, '_blank')
 }
 
 // 下一步
@@ -537,30 +550,9 @@ function prevStep() {
         
         <!-- 编译状态 -->
         <div v-if="isBuilding || buildResult" class="p-6 border-t">
-          <h3 class="text-lg font-bold mb-4">📝 编译日志</h3>
-          <div class="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm h-64 overflow-y-auto">
+          <h3 class="text-lg font-bold mb-4">📝 编译状态</h3>
+          <div class="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-sm h-48 overflow-y-auto">
             <div v-for="(log, idx) in buildLogs" :key="idx" class="mb-1">{{ log }}</div>
-          </div>
-          
-          <!-- 编译完成 -->
-          <div v-if="buildResult?.status === 'completed'" class="mt-4 text-center">
-            <div class="text-green-600 font-bold text-xl mb-4">✅ 编译完成！</div>
-            <div class="flex justify-center gap-4">
-              <a 
-                :href="buildResult.firmware?.efi" 
-                target="_blank"
-                class="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
-              >
-                下载 EFI 固件
-              </a>
-              <a 
-                :href="buildResult.firmware?.legacy" 
-                target="_blank"
-                class="px-6 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600"
-              >
-                下载 Legacy 固件
-              </a>
-            </div>
           </div>
         </div>
         
@@ -581,6 +573,44 @@ function prevStep() {
             下一步
           </button>
         </div>
+      </div>
+      
+      <!-- GitHub 配置 -->
+      <div class="mt-6 bg-white/90 rounded-xl p-4">
+        <h3 class="font-bold text-gray-800 mb-2">⚙️ GitHub 配置</h3>
+        <p class="text-sm text-gray-600 mb-3">需要 GitHub Personal Access Token 来触发 Actions 编译</p>
+        <div class="grid md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">GitHub Token</label>
+            <input 
+              v-model="githubConfig.token" 
+              type="password" 
+              placeholder="ghp_xxxx..."
+              class="w-full p-2 border border-gray-300 rounded-lg text-sm"
+            >
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">仓库所有者</label>
+            <input 
+              v-model="githubConfig.owner" 
+              type="text" 
+              placeholder="BBBIMAX"
+              class="w-full p-2 border border-gray-300 rounded-lg text-sm"
+            >
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">仓库名称</label>
+            <input 
+              v-model="githubConfig.repo" 
+              type="text" 
+              placeholder="openwrt-builder"
+              class="w-full p-2 border border-gray-300 rounded-lg text-sm"
+            >
+          </div>
+        </div>
+        <p class="text-xs text-gray-500 mt-2">
+          💡 Token 需要 <code>repo</code> 权限，<a href="https://github.com/settings/tokens/new?scopes=repo" target="_blank" class="text-blue-500 underline">点击创建</a>
+        </p>
       </div>
       
       <!-- 已选软件包 -->
