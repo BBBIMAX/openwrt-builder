@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  # 前端
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/nginx.conf:/etc/nginx/nginx.conf:ro
+
+  # 后端
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - firmware-data:/app/firmwares
+    environment:
+      - DATABASE_URL=sqlite:///./firmware.db
+
+  # 编译 worker (可选)
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - firmware-data:/openwrt/bin
+    profiles:
+      - build
+
+volumes:
+  firmware-data:

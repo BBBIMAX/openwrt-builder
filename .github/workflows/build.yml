@@ -1,0 +1,144 @@
+name: Build OpenWrt Firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      device:
+        description: 'Device platform'
+        required: true
+        type: choice
+        options:
+          - x86_64
+          - rockchip
+          - mediatek
+      device_model:
+        description: 'Device model'
+        required: true
+        type: string
+      packages:
+        description: 'Packages to install (JSON array)'
+        required: false
+        type: string
+        default: '[]'
+      theme:
+        description: 'Theme'
+        required: false
+        type: string
+        default: 'argon'
+      enable_docker:
+        description: 'Enable Docker'
+        required: false
+        type: boolean
+        default: false
+      enable_ipv6:
+        description: 'Enable IPv6'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            curl \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libssl-dev \
+            python3 \
+            python3-pip \
+            python3-venv \
+            flex \
+            bison \
+            patch \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            gawk \
+            gettext \
+            unzip \
+            xz-utils \
+            rsync \
+            file \
+            qemu-utils
+      
+      - name: Clone OpenWrt
+        run: |
+          git clone --depth 1 --branch v23.05 https://github.com/openwrt/openwrt.git /tmp/openwrt
+          cd /tmp/openwrt
+      
+      - name: Update feeds
+        run: |
+          cd /tmp/openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+      
+      - name: Generate config
+        run: |
+          cd /tmp/openwrt
+          
+          # Base config for device
+          echo "CONFIG_TARGET_${{ inputs.device }}=y" >> .config
+          echo "CONFIG_TARGET_${inputs.device}_DEVICE_${{ inputs.device_model }}=y" >> .config
+          
+          # LuCI
+          echo "CONFIG_PACKAGE_luci=y" >> .config
+          echo "CONFIG_PACKAGE_luci-theme-${{ inputs.theme }}=y" >> .config
+          
+          # Docker
+          if [ "${{ inputs.enable_docker }}" == "true" ]; then
+            echo "CONFIG_PACKAGE_docker=y" >> .config
+            echo "CONFIG_PACKAGE_dockerd=y" >> .config
+          fi
+          
+          # IPv6
+          if [ "${{ inputs.enable_ipv6 }}" == "true" ]; then
+            echo "CONFIG_IPV6=y" >> .config
+          fi
+      
+      - name: Add custom packages
+        if: inputs.packages != '[]'
+        run: |
+          cd /tmp/openwrt
+          echo '${{ inputs.packages }}' | jq -r '.[]' >> .config
+      
+      - name: Update config
+        run: |
+          cd /tmp/openwrt
+          make defconfig
+      
+      - name: Build firmware
+        run: |
+          cd /tmp/openwrt
+          make -j$(nproc) || make -j1 V=s 2>&1 | tee build.log
+      
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-firmware-${{ inputs.device_model }}
+          path: |
+            /tmp/openwrt/bin/targets/**/openwrt-*-squashfs-combined*.img.gz
+            /tmp/openwrt/bin/targets/**/openwrt-*-squashfs-rootfs*.tar.gz
+            /tmp/openwrt/build.log
+          retention-days: 7
+      
+      - name: Upload to release
+        if: github.event.inputs.release == 'true'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: /tmp/openwrt/bin/targets/**/openwrt-*-squashfs-combined*.img.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
